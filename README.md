@@ -23,7 +23,7 @@ You have a dataset of 768 buildings, each with:<br>
 
 &nbsp;&nbsp;&nbsp;7- Glazing Area – How much window area the building has.
 
-&nbsp;&nbsp;&nbsp;8- Glazing Area Distribution – Where the windows are located (e.g., evenly spread, only on one side) → also categorical.
+&nbsp;&nbsp;&nbsp;8- Glazing Area Distribution – Where the windows are located (e.g., evenly spread, only on one side).
 
 **Targets (outputs):**
 
