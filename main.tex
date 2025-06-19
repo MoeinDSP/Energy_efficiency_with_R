@@ -1,0 +1,129 @@
+\documentclass[a4paper,12pt]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{geometry}
+\usepackage{parskip}
+
+
+
+
+% Required packages
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}         % For clickable links
+\usepackage{tocloft}          % For styling ToC if needed
+\usepackage{xcolor}           % To color hyperlinks
+
+% Setup hyperlink colors (matching your image)
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue
+}
+
+
+% Page setup
+\geometry{top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm}
+
+\begin{document}
+% Remove page number
+\thispagestyle{empty}
+% Title
+% \vspace*{2.5cm}
+% \begin{center}
+%     {\LARGE \textbf{Bayesian Learning and Montecarlo}}\\
+%     {\LARGE \textbf{Simulation}}\\[1.5em]
+    
+%     {\large June 19, 2025}
+% \end{center}
+
+% Logo
+% \vspace{2cm}
+\begin{center}
+    \includegraphics[width=0.66\textwidth]{Logo_Politecnico_Milano.png}
+\end{center}
+
+% University text
+\vspace{2cm}
+\begin{center}
+    {\Huge \textbf{Bayesian Learning and Montecarlo Simulation}}\\
+\end{center}
+
+% Section title and authors
+\vspace{1cm}
+\begin{center}
+    {\Huge \textbf{Energy Efficiency}}\\[1em]
+    Moein Taherinezhad, 10935476\\
+    Trygve Myrland Tafjord, 11077296
+\end{center}
+
+% Date at bottom
+\vfill
+\begin{center}
+    \textit{July 18, 2025}
+\end{center}
+
+\newpage  % Start a new page
+\pagenumbering{arabic}
+
+% Table of Contents
+\tableofcontents
+\section{Introduction}
+\subsection{Overview of the problem}
+With extreme temperatures becoming more frequent across the globe, improving the energy efficiency of buildings has never been more important. Whether the goal is to lower energy costs or to reduce environmental impact, optimizing heating and cooling systems can have significant benefits. In this project, we explore a dataset that offers valuable insights into how building design influences energy consumption — helping us make smarter, greener choices.
+
+
+
+
+\subsection{ description of the data set}
+The data are related to energy analysis using 12 different building
+shapes simulated in Ecotect. The buildings differ with respect to the glazing area, the glazing
+area distribution, and the orientation, amongst other parameters. We simulate various settings as functions of the afore-mentioned characteristics to obtain 768 building shapes. The
+dataset comprises 768 samples and 8 features, aiming to predict two real valued responses.
+The dataset contains eight attributes (or features, denoted by X1. . . X8) and two responses
+(or outcomes, denoted by y1 and y2). The aim is to use the eight features to predict each of
+the two responses.
+Specifically:
+\begin{itemize}
+    \item X1 Relative Compactness
+    \item X2 Surface Area
+    \item X3 Wall Area
+    \item X4 Roof Area
+    \item X5 Overall Height
+    \item X6 Orientation
+    \item X7 Glazing Area
+    \item X8 Glazing Area Distribution
+    \item y1 Heating Load
+    \item y2 Cooling Load
+\end{itemize}
+
+\subsection{goal of the project}
+The goal is to perform a linear regression on the dataset using Heating Load or Cooling Load as the response variable and all the other variables as predictors. Note that there are categorical variables! Discuss the importance of the various predictors. Discuss model selection, prediction and out-of-sample validation.
+
+\section{Exploratory Data Analysis}
+This is a crucial part, a proper and extensive EDA would reveal interesting patterns and help to prepare the data in a better way. First, we aim to perform outlier detection. Figure 1 demonstrates that variable CRIM and BLACK
+take wide range of values. Variables CRIM, ZN, RM and BLACK have a large difference between
+their median and mean which indicates lots of outliers in respective variables.
+Second, we discuss about the correlation. Correlation is a statistical measure that suggests the
+level of linear dependence between two variables that occur in pairs. Its value lies between -1 to +1:
+\begin{itemize}
+    \item If it is above 0 it means positive correlation i.e. X is directly proportional to Y.
+    \item If it is below 0, it means negative correlation i.e. X is inversely proportional to Y.
+\end{itemize}
+
+\section{Model specification and posterior analysis}
+\section{Model specification and posterior analysis}
+
+\vspace{1cm}
+
+% List of Figures
+\listoffigures
+
+
+
+\end{document}
+
+
+
