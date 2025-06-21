@@ -1,0 +1,307 @@
+---
+title: "Energy_efficiency"
+author: "Moein-Taherinezhad"
+date: "2025-06-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+# Loading Library 
+
+```{r}
+#loading libraries
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+library(caret)
+library(elasticnet)
+library(knitr)
+library(matrixStats)
+library(reshape2)
+library(corrplot)
+```
+
+# loading the data
+
+```{r}
+data <- read.csv("Energy_Efficiency.csv")
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+# Quick look at the data 
+
+```{r}
+
+head(data)
+summary(data)
+class(data)
+str(data)
+names(data)
+
+```
+
+# Renaming the columns to make them more understandable
+
+```{r}
+colnames(data) <- c('Relative_Compactness',
+                      'Surface_Area',
+                      'Wall_Area',
+                      'Roof_Area',
+                      'Overall_Height',
+                      'Orientation',
+                      'Glazing_Area',
+                      'Glazing_Area_Distribution',
+                      'Heating_Load',
+                      'Cooling_Load')
+head(data)
+
+```
+
+# Cleaning missing or undefined values - cleaning the blank observations
+
+```{r}
+colSums(is.na(data))
+```
+
+so we do not have any missing data in this data set which is not normal but I'll take it. 
+
+```{r}
+colSums(data == "")
+```
+No blank observations so we will move on to visualizing the data.
+
+
+# dataset scaling
+The summary of the dataset reveals that the features vary widely in their value ranges. Such disparities can potentially skew model predictions, as features with larger numerical values may disproportionately influence the results. To address this, we will scale the dataset.
+
+Below is a boxplot of the dataset prior to scaling, which clearly illustrates the significant differences in feature ranges.
+```{r}
+boxplot(data)
+```
+The boxplot represents the distribution of selected features in the dataset before scaling. 
+Each boxplot corresponds to a feature: Relative_Compactness, Roof_Area, Orientation, and Heating_Load.
+
+The height of each box and its range on the y-axis shows how large or small the values for that feature are.
+You can observe that:
+
+  1- Relative_Compactness, Roof_Area, and Heating_Load all have very different      scales.
+
+  2- Relative_Compactness and Roof_Area span hundreds of units, 
+     while Orientation and Heating_Load are much smaller.
+
+  3- Orientation has values clustered tightly (as expected for a categorical        feature coded numerically).
+  
+This plot clearly demonstrates a scale imbalance among features.
+
+
+```{r}
+data[,1:8] <- scale(data[,1:8])
+boxplot(data)
+
+#We can check the mean of each feature to make sure that the data set is scaled. Means should be 0
+
+options(digits = 3)
+format(colMeans(data[,1:8]), scientific = FALSE)
+
+
+
+#check the standard deviation. Should be 1
+data %>% select(-Heating_Load,-Cooling_Load) %>% summarise_if(is.numeric,sd)
+
+```
+
+```{r}
+# Load libraries
+
+# Load and rename data
+data <- read.csv("Energy_Efficiency.csv")
+colnames(data) <- c('Relative_Compactness', 'Surface_Area', 'Wall_Area', 'Roof_Area',
+                    'Overall_Height', 'Orientation', 'Glazing_Area', 'Glazing_Area_Distribution',
+                    'Heating_Load', 'Cooling_Load')
+
+# Select numeric columns for plotting
+numeric_data <- data[, sapply(data, is.numeric)]
+
+# Melt the data for ggplot
+melted_data <- melt(numeric_data)
+
+# Plot multiple boxplots using facets
+ggplot(melted_data, aes(x = "", y = value, fill = variable)) +
+  geom_boxplot() +
+  facet_wrap(~ variable, scales = "free", ncol = 5) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 14, face = "bold", hjust = 0.5)) +
+  labs(title = "Energy Efficiency Dataset - Boxplots",
+       x = NULL, y = NULL)
+
+```
+The figure above presents boxplots for all numerical variables in the Energy Efficiency dataset. Boxplots are an effective tool to visualize the distribution, central tendency, and spread of each feature, as well as to identify potential outliers.
+
+We observe that features like Surface_Area, Roof_Area, and Overall_Height span relatively large numeric ranges, while others such as Orientation, Glazing_Area, and Heating_Load are more compact in scale.
+
+Some features — for example, Surface_Area and Heating_Load — exhibit slight asymmetry, indicating skewed distributions.
+
+The difference in scales across features highlights the need for scaling or normalization prior to modeling, as models may otherwise disproportionately weight variables with larger magnitudes.
+
+There is no strong visual indication of extreme outliers, though variability is notable in features such as Roof_Area and Cooling_Load.
+
+
+
+
+
+
+
+```{r}
+# Compute correlation matrix
+corr_matrix <- cor(numeric_data)
+
+# Visualize with corrplot
+corrplot(corr_matrix, method = "color", type = "upper", 
+         tl.cex = 0.8, addCoef.col = "black", number.cex = 0.7,
+         title = "Correlation Matrix of Features", mar=c(0,0,1,0))
+
+```
+The figure below displays the correlation matrix for all numeric features in the Energy Efficiency dataset. Each cell shows the Pearson correlation coefficient between a pair of variables, with values ranging from -1 to +1:
+
+  +1 indicates a perfect positive linear relationship
+
+ –1 indicates a perfect negative linear relationship
+
+  0 indicates no linear correlation
+
+The color gradient visually reinforces this relationship, with deep blue for strong positive correlations and dark red for strong negative correlations.
+
+Key Observations:
+
+Relative_Compactness is strongly negatively correlated with Surface_Area (-0.99) and positively correlated with Overall_Height (0.83), implying geometric dependencies in building structure.
+
+Heating_Load shows a strong negative correlation with Relative_Compactness (-0.62), suggesting that more compact buildings require less energy for heating — a physically intuitive insight.
+
+Cooling_Load is highly positively correlated with Heating_Load (0.89), indicating that buildings that require more heating also tend to require more cooling, possibly due to poor insulation or inefficiency.
+
+Glazing_Area and Glazing_Area_Distribution show weak or negligible correlations with most variables, which may mean their effects are more nonlinear or context-dependent.
+
+#Heating load density. 
+```{r}
+data %>% ggplot(aes(Heating_Load)) +
+  geom_density(aes(fill = "red", color = "red")) +
+  xlab("heating lab") +
+  ggtitle("Density of Heating Load") +
+  theme_economist() +
+  theme(legend.position = "none")
+```
+Second, the density of Cooling load
+```{r}
+data %>% ggplot(aes(Cooling_Load)) +
+  geom_density(aes(fill = "gray", color = "gray")) +
+  xlab("cooling lab") +
+  ggtitle("Density of Cooling Load") +
+  theme_economist() +
+  theme(legend.position = "none")
+```
+
+```{r}
+
+data %>% ggplot(aes(Surface_Area,Heating_Load)) +
+                    geom_point(aes(color = "red")) +
+                    xlab("surface area") +
+                    ylab("heating load")+
+                    ggtitle("Surface area and heat") +
+                    theme_economist() +
+                    theme(legend.position = "none")
+
+```
+
+scatter plot of roof area and heating load
+
+```{r}
+data %>% ggplot(aes(Roof_Area,Heating_Load)) +
+  geom_point(aes(color = "red")) +
+  xlab("roof area") +
+  ylab("heating load")+
+  ggtitle("Roof area and heat") +
+  theme_economist() +
+  theme(legend.position = "none")
+```
+
+
+scatter plot of compactness and heating load
+
+```{r}
+data %>% ggplot(aes(Relative_Compactness,Heating_Load)) +
+  geom_point(aes(color = "red")) +
+  xlab("relative compactness") +
+  ylab("heating load") +
+  ggtitle("Relative Compactness and Heating Load") +
+  theme_economist() +
+  theme(legend.position = "none")
+```
+
+#scatter plot of surface area and cooling load
+```{r}
+data %>% ggplot(aes(Surface_Area,Cooling_Load)) +
+  geom_point(aes(color = "blue")) +
+  xlab("surface area") +
+  ylab("cooling load")+
+  ggtitle("Surface area and cooling") +
+  theme_economist() +
+  theme(legend.position = "none")
+```
+
+
+
+
+#scatter plot of roof area and cooling load
+
+```{r}
+
+data %>% ggplot(aes(Roof_Area,Cooling_Load)) +
+  geom_point(aes(color = "blue")) +
+  xlab("roof area") +
+  ylab("cooling load")+
+  ggtitle("Roof area and cooling") +
+  theme_economist() +
+  theme(legend.position = "none")
+```
+
+
+
+
+#scatter plot of compactness and cooling load
+```{r}
+data %>% ggplot(aes(Relative_Compactness,Cooling_Load)) +
+  geom_point(aes(color = "blue")) +
+  xlab("relative compactness") +
+  ylab("cooling load") +
+  ggtitle("Relative Compactness and Cooling Load") +
+  theme_economist() +
+  theme(legend.position = "none")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
