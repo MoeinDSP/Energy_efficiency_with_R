@@ -1,0 +1,1047 @@
+---
+title: "Energy_efficiency"
+author: "Moein-Taherinezhad and Trygve Tafjord"
+date: "2025-06-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+# Loading Library 
+
+```{r}
+#loading libraries
+library(conflicted)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+library(caret)
+library(elasticnet)
+library(knitr)
+library(matrixStats)
+library(reshape2)
+library(corrplot)
+library(BAS)
+library(rstanarm)
+library(bayesplot)
+
+
+
+```
+
+## loading the data and doing initial data exploration
+
+```{r}
+data <- read.csv("Energy_Efficiency.csv")
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+Renaming the columns to make them more understandable
+
+```{r}
+colnames(data) <- c('Relative_Compactness',
+                      'Surface_Area',
+                      'Wall_Area',
+                      'Roof_Area',
+                      'Overall_Height',
+                      'Orientation',
+                      'Glazing_Area',
+                      'Glazing_Area_Distribution',
+                      'Heating_Load',
+                      'Cooling_Load')
+```
+
+
+```{r}
+
+summary(data) #basic ex properties for the data
+str(data)     #type of data and counts
+
+```
+It is worth noting that there are two response variables and eight features, where two features are categorical variables. 
+In total there are 768 observations. This is not a huge data set, however it is fitting to the limited number of features.    
+
+
+
+### Cleaning missing or blank observations
+
+```{r}
+colSums(is.na(data))
+```
+
+We do not have any missing data. 
+
+```{r}
+colSums(data == "")
+```
+We do not have any blank observations, thus som data visualoization is performed.
+
+## Data Visualization
+
+### Histograms
+```{r}
+plot_feature_histograms <- function(data, exclude_cols = c("Heating_Load", "Cooling_Load")) {
+  numeric_features <- names(data)[sapply(data, is.numeric)]
+  features_to_plot <- setdiff(numeric_features, exclude_cols)
+  n_features <- length(features_to_plot)
+  
+  # Set layout for plotting
+  old_par <- par(mfrow = c(ceiling(1), 1), mar = c(4, 4, 3, 2) + 0.1)
+
+  for (feature in features_to_plot) {
+    x <- data[[feature]]
+    
+    hist(x,
+         main = feature,
+         xlab = feature,
+         ylab = "Frequency",
+         col = "skyblue",
+         border = "white")
+  }
+
+  # Reset par settings
+  par(old_par)
+}
+
+# Call the function on your dataset
+plot_feature_histograms(data)
+
+
+
+
+```
+Based on the histograms, it can be concluded that Orientation and Glazing_Area_distribution are categorical variables, holding 4 and 5 different values. 
+The histograms also reveals that the features vary widely in their value ranges. Such disparities can make it difficult to compare the contributions from different coefficients, as features with larger numerical values may disproportionately influence the results. 
+To address this, we can scale the dataset.
+
+For strictly positive values with a skeewnes, it is beneficial to perform a log-transform to get a more normally distributed feature. 
+Based on the histograms, it can be stated that Relative_Compactness and Wall_Area have a slight skewness, thus they are candidates for a log-transform. 
+
+Plotting the log-tranform of the skeewed variables
+```{r}
+skewed_features <- as.data.frame(log(data[, c("Relative_Compactness", "Wall_Area")]))
+
+plot_feature_histograms(skewed_features)
+
+
+```
+The log-transformed features are visually more balanced, and therefore alligning more with assumption of Gaussian relation.
+
+Plotting histograms for the reponse variables;
+#### Heating load density. 
+```{r}
+data %>% ggplot(aes(Heating_Load)) +
+  geom_density(aes(fill = "red", color = "red")) +
+  xlab("heating lab") +
+  ggtitle("Density of Heating Load") +
+  theme_economist() +
+  theme(legend.position = "none")
+
+
+old_par <- par(mfrow = c(1, 2), mar = c(4, 4, 3, 2) + 0.1)
+# histogram with added parameters
+heating_load <-data[['Heating_Load']]
+
+hist(heating_load,
+main="Heating Load Histogram",
+xlab="Heating Load [W]",
+ylab="Frequenzy",
+xlim=c(0,max(heating_load)+10),
+col="darkmagenta"
+)
+```
+
+
+### Cooling load density
+```{r}
+data %>% ggplot(aes(Cooling_Load)) +
+  geom_density(aes(fill = "gray", color = "gray")) +
+  xlab("cooling lab") +
+  ggtitle("Density of Cooling Load") +
+  theme_economist() +
+  theme(legend.position = "none")
+
+
+cooling_load <-data[['Cooling_Load']]
+
+hist(cooling_load,
+main="Cooling Load Histogram",
+xlab="Cooling Load [W]",
+ylab="Frequenzy",
+xlim=c(0,max(cooling_load)+10),
+col="coral"
+)
+```
+
+### Boxplots
+
+To illustrate the scaling imbalance, box plots are used. 
+```{r}
+
+plot_individual_boxplots <- function(data, exclude_cols = c("Heating_Load", "Cooling_Load")) {
+  numeric_features <- names(data)[sapply(data, is.numeric)]
+  features_to_plot <- setdiff(numeric_features, exclude_cols)
+  n_features <- length(features_to_plot)
+  
+  # Set layout for plotting
+  old_par <- par(mfrow = c(ceiling(1), 1), mar = c(4, 4, 3, 2) + 0.1)
+
+  for (feature in features_to_plot) {
+    boxplot(data[[feature]],
+            main = paste(gsub("_", " ", feature)), # Title for each plot
+            ylab = "Value", # Y-axis label
+            col = "lightblue", # Color of the boxplot
+            las = 1 # Always horizontal axis labels for values
+    )
+  }
+
+  # Reset par settings
+  par(old_par)
+}
+
+
+#Plotting individual featues
+plot_individual_boxplots(data)
+
+# Plotting all features in one diagram
+boxplot(data,col="lightblue", main = "boxplot of all coloumns", las = 2)
+```
+The boxplot represents the distribution of all features in the dataset before scaling. And they clearly illustrates the significant differences in feature ranges.
+
+Notable obeservations include:
+
+  1- Surface_Area, Wall_Area, and Roof_Area all have very different scales.
+
+  2- Features such as Relative_Compactness and Overall_Height span a much smaller range. 
+  
+This plot clearly demonstrates a scale imbalance among features. Further more, the skewness of some features are visualized.
+
+
+
+### ScatterPlots
+Scatterplots are implemented to get a sense of the linear nature of the different features. 
+
+```{r}
+
+numeric_features <- c(
+  'Relative_Compactness', 'Surface_Area', 'Wall_Area', 'Roof_Area',
+  'Overall_Height', 'Glazing_Area'
+)
+targets <- c("Heating_Load", "Cooling_Load")
+
+plot_scatterplots <- function(data, numerical_features, targets, predictor_col) {
+  
+  # Set layout for plotting
+  old_par <- par(mfrow = c(2, 3), mar = c(0, 0, 0, 0) + 3.8)
+  for (target in targets) {
+    for (feature in numerical_features) {
+        plot(data[[feature]], data[[target]],
+             xlab = gsub("_", " ", feature),  
+             ylab = target, 
+             main = paste(gsub("_", " ", target), "vs.", gsub("_", " ", predictor_col)), # Dynamic title
+             col = "steelblue", # Point color
+             pch = 16,          # Solid circles for points
+             cex = 0.8,          # Size of points
+             ylim = c(0, max(data[[target]]))
+        )
+    }
+  }
+  # Reset par settings
+  par(old_par)
+}
+
+plot_scatterplots(data, numeric_features, targets, "Heating_Load")
+
+```
+From the scatterplots, we observe nonlinear behaviour for Surface Area, and Roof Area. This indicated an inherent noise in the observer that could pose a problem for the linear mode.
+A relatively large variance can be observed for each feature, this can be taken into account when defining prior distributions. 
+
+
+### Correlation Matrix
+
+The figure below displays the correlation matrix for all numeric features in the Energy Efficiency dataset. Each cell shows the Pearson correlation coefficient between a pair of variables, with values ranging from -1 to +1.
+For features that are strongly correlated, it is possible to remove some. Due to the dataset being small, and the number of features being relatively few this is not urgent for the Energy Efficiency data set. 
+
+```{r}
+
+# Define categorical features to exclude
+exclude_cols <- c("Orientation", "Glazing_Area_Distribution")
+numeric_data <- data[, !(names(data) %in% exclude_cols) & sapply(data, is.numeric)]
+
+# Compute correlation matrix
+corr_matrix <- cor(numeric_data)
+
+# Visualize with corrplot
+corrplot(corr_matrix, method = "color", type = "upper", 
+         tl.cex = 0.8, addCoef.col = "black", number.cex = 0.7,
+         title = "Correlation Matrix of Features", mar=c(0,0,1,0))
+
+```
+
+  +1 indicates a perfect positive linear relationship
+ –1 indicates a perfect negative linear relationship
+  0 indicates no linear correlation
+
+The color gradient visually reinforces this relationship, with deep blue for strong positive correlations and dark red for strong negative correlations.
+
+Key Observations:
+
+-Relative_Compactness is strongly negatively correlated with Surface_Area (-0.99) and positively correlated with Overall_Height (0.83), implying geometric dependencies in building structure as expenced. Thus this featureis a potential candidate for removal.
+-Heating_Load shows a strong negative correlation with Relative_Compactness (-0.62), suggesting that more compact buildings require less energy for heating — a physically intuitive insight.
+-Cooling_Load is highly positively correlated with Heating_Load (0.89), indicating that buildings that require more heating also tend to require more cooling, possibly due to poor insulation or inefficiency.
+
+
+## Data Preprocessing
+
+### Log Transform for skeewed data
+As discussed earlier this is usefull of getting a more Gaussian dataset.
+```{r}
+
+log_transform_features <- function(data, features_to_transform) {
+  # Create a copy of the data to avoid modifying the original data frame outside the function
+  transformed_data <- data
+  
+  # Loop through the specified feature names
+  for (feature in features_to_transform) {
+    # Check if the feature exists in the data frame
+    if (feature %in% names(transformed_data)) {
+      # Apply the log transformation
+      transformed_data[[feature]] <- log(transformed_data[[feature]])
+    } else {
+      # Print a warning if a specified feature is not found
+      warning(paste("Feature not found in data:", feature))
+    }
+  }
+  
+  # Return the data frame with the transformed features
+  return(transformed_data)
+}
+
+features_to_transform = c("Relative_Compactness", "Wall_Area")
+#data = log_transform_features(data, features_to_transform)
+
+
+```
+
+
+
+### Data scaling
+Scaling the data can make it easier to interpret and compare the model coefficients. However, it is to be noted that the dataset is relativly small, having 768 observations. 
+Thus it is not guarantied that the dataset is representative for future data, causing the model to have potential large errors. 
+Furhter more, it is not certain that the coefissiant are gausian. As described earlier some coefficiants have a slight skeewness.     
+
+```{r}
+scale_data <- function(data) {
+
+  # Define categorical features
+  categorical_features <- c("Orientation", "Glazing_Area_Distribution")
+  
+  # Select and scale numeric features (excluding categoricals)
+  numeric_features <- names(data)[!(names(data) %in% categorical_features) & sapply(data, is.numeric)]
+  scaled_numeric <- scale(data[, numeric_features])
+  
+  # Combine back with categorical features and targets
+  final_data <- cbind(as.data.frame(scaled_numeric), data[, categorical_features], 
+                      data[, c("Heating_Load", "Cooling_Load")])
+  return(final_data)
+}
+
+```
+Checking that we had a successful scale:
+
+```{r}
+data = scale_data(data)
+
+numeric_features <- c(
+  'Relative_Compactness', 'Surface_Area', 'Wall_Area', 'Roof_Area',
+  'Overall_Height', 'Glazing_Area'
+)
+
+colMeans(data[, numeric_features])  # Should be ≈ 0
+apply(data[, numeric_features], 2, sd)  # Should be ≈ 1
+```
+
+
+### Convert categorical attributes
+
+To convert categorical attributes, replace categorical attributes with m-1 indicator attributes, where m = number of categories. One variable must be removed in order for X to be invertable
+This can be automatically done with the as.factor function, https://www.rdocumentation.org/packages/h2o/versions/2.4.3.11/topics/as.factor
+
+Note that we don't have that many dimensions, thus we keep all categories. 
+
+```{r}
+encode_categorical_vars <- function(data, categorical_vars) {
+  for (var in categorical_vars) {
+    levels_var <- unique(data[[var]])
+    levels_var <- sort(levels_var)  # Sort to ensure consistent order
+    k <- length(levels_var)
+    
+    # Loop through first k-1 categories
+    for (i in 1:(k - 1)) {
+      level <- levels_var[i]
+      new_col_name <- paste(var, level, sep = "_")
+      data[[new_col_name]] <- ifelse(data[[var]] == level, 1, 0)
+    }
+    
+    # Drop the original categorical column
+    data[[var]] <- NULL
+  }
+  
+  return(data)
+}
+
+categorical_vars <- c("Orientation", "Glazing_Area_Distribution")
+data <- encode_categorical_vars(data, categorical_vars)
+```
+
+Testing that the transformation was done correctly
+```{r}
+# Ensuring the tranformation was completed
+head(data)
+```
+
+
+
+## Model training
+
+The goal of this sections is to perform linear regression in the Bayesian framework. The linear model is given by:
+ 
+$$
+y = X\beta+\epsilon  
+$$
+where
+$$
+\epsilon \sim \mathcal{N}(0, \sigma^2)
+$$
+
+
+The likelihood of $y$ given $\beta$, $\sigma^2$, and $X$ is normally distributed:
+
+$$
+y|\beta, \sigma^2, X \sim \mathcal{N}(X\beta, \sigma^2 I_n) \quad \text{likelihood}
+$$
+
+The prior distribution for the parameters $(\beta, \sigma^2)$ is given by $\pi(\beta, \sigma^2)$:
+
+$$
+(\beta, \sigma^2) \sim \pi(\beta, \sigma^2) \quad \text{prior}
+$$
+The objective of this analysis is to find good prior distributions.
+
+
+
+Note that **heating load** is the only target variable that is subject to analysis, before any models are created, the data is split into a training set and test set. 
+We will test on  
+
+```{r}
+set.seed(42)
+
+#use 80% of dataset as training set and 20% as test set
+sample <- sample(c(TRUE, FALSE), nrow(data), replace=TRUE, prob=c(0.7,0.3))
+train  <- data[sample, ]
+test   <- data[!sample, ]
+
+# Calculate scaling parameters from the training data
+#train_mean <- colMeans(train[, numeric_predictors])
+#train_sd <- apply(train[, numeric_predictors], 2, sd)
+```
+
+
+### Conjugate prior
+Conjugate priors have posteriors that can be easily calculated without simulation. However, there are many hyperparameters to tune. The prior distribution is the following:
+$$
+\beta|\sigma^2 \sim \mathcal{N}_{k+1}(\tilde{\beta}, \sigma^2 M^{-1}),
+$$
+
+$$
+\sigma^2 \sim \mathcal{IG}(a, b)   
+$$
+The hyper parameters to tune are $a$, $b$ and $M$ where $M$ is a $(k-1)(k-1)$ matrix and $k$ is the number of attributes in the dataset.   
+
+For the conjugate prior we need to extract X and y form the data set. Note that due to computationally complexity, we need to perform some model-selection to remove some features. Otherwise the model is to close to a singularity. 
+Features that are highly correlated are removed, this is determined based on the correlation-matrix to be **Surface_Area** and **Roof_Area** due to geometric relation and high correlation with Relative_Compactness.
+
+
+
+```{r}
+formula_full <- Heating_Load ~ Relative_Compactness + 
+                               Wall_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4
+
+# Training set
+X <- model.matrix(formula_full, data = train)
+y <- as.matrix(train["Heating_Load"])
+
+#Test set
+X_test <- model.matrix(formula_full, data = test)
+y_test <- as.matrix(test["Heating_Load"])
+
+
+```
+
+
+#### Arbitrary values for hyper parameters
+
+Testing a model with no information on the prior. Using $$M = I_{k+1}/c$$ to reduce the number of hyperparameters. Using large values on diagonal (imply high variance) to force the learning to come from the data. 
+Note that the high number of hyperparameters are the main drawback for Conjugate Models, since tuning is very difficult.
+
+Finding the posteriror analytically:
+```{r}
+
+# Get the dimension, note that X already have intercept-columns
+k<-ncol(X) 
+n<-nrow(X)
+
+#defining hyperparameters:
+a<-1    #low to get a flat distribution to account for uncertainty in prior 
+b<-1    #low to get a flat distribution to account for uncertainty in prior
+beta_pri <- rep(0, k) #zero to account for uncertainty in prior
+c<-100 #large to account for uncertainty in prior, this allows for a large number for beta values. 
+M <- diag(k) * c
+
+#calculating posterior
+XtX <- t(X) %*% X
+beta_hat <- solve(XtX) %*% t(X) %*% y
+s2 <- t(y-X %*% beta_hat) %*% (y-X%*%beta_hat)
+
+beta_post_cm <- solve(M + XtX) %*% (XtX %*% beta_hat+M %*% beta_pri)
+M_post    <- solve(M+XtX)
+a_post    <- n/2 + a
+b_post    <- b + s2/2 + 1/2* (t(beta_post_cm-beta_hat) %*% solve(solve(M) + solve(XtX)) %*% (beta_post_cm-beta_hat))
+
+#Ensure values are numeric
+a_post <- as.numeric(a_post)
+b_post <- as.numeric(b_post)
+```
+
+Analyzing the beta coefficients to see what coefficients are relevant for the response
+```{r}
+
+print_beta <- function(beta_vector, names = NULL) {
+  beta_values <- as.vector(beta_vector)  # Ensure it's a numeric vector
+  
+  # Use provided names or default to "Beta_1", "Beta_2", ...
+  if (is.null(names)) {
+    names <- paste0("Beta_", seq_along(beta_values))
+  }
+
+  for (i in seq_along(beta_values)) {
+    cat(names[i], ": ", round(beta_values[i], 4), "\n")
+  }
+}
+
+print_beta(beta_post_cm)
+```
+Sicne the data is mean centeres, it is evident that Beta_1 or Relative Compactness. 
+
+
+### Result and Analysis for the conjugae model
+
+Finding and plotting the distributions for the coefficients
+
+```{r}
+# beta_post_cm, M_post, a_post, b_post, X, y are fetched from the model
+
+# Getting the number of coefficients
+k <- length(beta_post_cm)
+
+# Get feature names for plotting
+# Assuming the column names of X (excluding the intercept if X was built manually)
+# or using generic names if column names are not available.
+# Adjust this line based on how your X matrix was created.
+feature_names <- colnames(X)
+if (is.null(feature_names)) {
+  feature_names <- c("Intercept", paste0("X", 1:(k-1)))
+}
+
+
+# Loop through each coefficient to plot its posterior density
+for (j in 1:k) {
+  # Calculate the posterior mean for beta_j
+  mean_beta_j <- beta_post_cm[j]
+
+  df_beta_j <- 2 * as.numeric(a_post) # Convert a_post to numeric
+  # Convert b_post and a_post to numeric to avoid recycling warnings
+  scale_beta_j <- sqrt(M_post[j,j] * as.numeric(b_post) / as.numeric(a_post)) # Scale parameter for the t-distribution
+
+  # Define a range for plotting
+  x_vals <- seq(mean_beta_j - 4 * scale_beta_j, mean_beta_j + 4 * scale_beta_j, length.out = 500)
+
+  # Plot the density
+  plot(x_vals, dt((x_vals - mean_beta_j) / scale_beta_j, df = df_beta_j) / scale_beta_j,
+       type = "l",
+       xlab = expression(beta),
+       ylab = "Density",
+       main = paste("Posterior Density of", feature_names[j]),
+       lwd = 2, col = "blue")
+  abline(v = mean_beta_j, col = "red", lty = 2) # Mark the posterior mean
+}
+
+```
+
+### CALCULATE PREDICTION COVERAGE ON THE TEST SET
+
+Calculate the posterior predictive distribution parameters for each test point
+Predictive mean
+
+```{r}
+
+pred_mean <- X_test %*% beta_post_cm
+
+# Predictive variance
+# The term inside the diag() is a vector of x_new_i^T * (M+X'X)^-1 * x_new_i
+pred_var_scale <- b_post / a_post
+pred_var <- pred_var_scale * (1 + diag(X_test %*% solve(M + XtX) %*% t(X_test)))
+
+# Predictive scale (standard deviation)
+pred_scale <- sqrt(pred_var)
+
+# Degrees of freedom for the predictive t-distribution
+df_pred <- 2 * a_post
+
+# Calculate 95% predictive intervals for each test point
+pred_int_lower <- pred_mean + qt(0.025, df = df_pred) * pred_scale
+pred_int_upper <- pred_mean + qt(0.975, df = df_pred) * pred_scale
+
+# Check which of the true y_test values fall outside the interval
+outside_interval <- (y_test < pred_int_lower) | (y_test > pred_int_upper)
+num_outside <- sum(outside_interval)
+total_test <- length(y_test)
+percent_outside <- (num_outside / total_test) * 100
+
+cat(sprintf("Number of test points: %d\n", total_test))
+cat(sprintf("Number of points outside the 95%% predictive interval: %d\n", num_outside))
+cat(sprintf("Percentage of points outside the 95%% predictive interval: %.2f%%\n", percent_outside))
+
+# For comparison, the expected percentage outside is 5%
+
+```
+
+using Mean Square Error to see results
+```{r}
+predictions_conjugate_model <- X_test %*% beta_post_cm
+
+mse <- mean((y_test - predictions_conjugate_model)^2)
+cat("Test MSE:", mse, "\n")
+
+```
+The model performs poorly, this is most likely due to 
+
+
+
+### Bayasin Multiple Linear Regression
+```{r}
+# Import library
+library(BAS)
+# Use `bas.lm` to run regression model
+#Heating
+HL.bas = bas.lm(Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4,
+                      data = train, prior = "BIC", modelprior = Bernoulli(1), include.always = ~ ., n.models = 1)
+```
+
+```{r}
+#Coeff-Heating
+HL.coef = coef(HL.bas)
+HL.coef
+```
+
+```{r}
+par(mfrow = c(2, 2), col.lab = "darkgrey", col.axis = "darkgrey", col = "darkgrey")
+plot(HL.coef, subset = 1:8, ask = F)
+```
+
+```{r}
+confint(HL.coef, parm = 1:8)
+```
+
+
+```{r}
+HL.out = confint(HL.coef)[, 1:2]  
+
+# Extract the upper and lower bounds of the credible intervals
+names = c("posterior mean", "posterior std", colnames(HL.out))
+HL.out = cbind(HL.coef$postmean, HL.coef$postsd, HL.out)
+colnames(HL.out) = names
+
+round(HL.out, 2)
+```
+
+```{r}
+n = nrow(train)
+n
+```
+```{r}
+print(train)
+```
+
+# Heating_Load
+```{r}
+# Unit information prior
+HL.g = bas.lm( Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4, data=train, prior="g-prior", a=n, modelprior=uniform())
+
+#a is the hyperparameter in this case g=n
+
+# Zellner-Siow prior with Jeffrey's reference prior on sigma^2
+HL.ZS = bas.lm( Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4, 
+                               data=train, prior="JZS", 
+                               modelprior=uniform())
+
+# Hyper g/n prior
+HL.HG = bas.lm(Heating_Load ~ Relative_Compactness + Surface_Area + Wall_Area +
+                      Roof_Area + Overall_Height + Orientation_2+Orientation_3 +Orientation_4 + Glazing_Area +
+                      Glazing_Area_Distribution_0 + Glazing_Area_Distribution_1 + Glazing_Area_Distribution_2+
+                Glazing_Area_Distribution_3 +  Glazing_Area_Distribution_4, data=train, prior="hyper-g-n", 
+                a=3, modelprior=uniform()) 
+# hyperparameter a=3
+
+# Empirical Bayesian estimation under maximum marginal likelihood
+HL.EB = bas.lm(Heating_Load ~ Relative_Compactness + Surface_Area + Wall_Area +
+                      Roof_Area + Overall_Height + Orientation_2+Orientation_3 +Orientation_4 + Glazing_Area +
+                      Glazing_Area_Distribution_0 + Glazing_Area_Distribution_1 +Glazing_Area_Distribution_2 + Glazing_Area_Distribution_3 + Glazing_Area_Distribution_4, data=train, prior="EB-local", 
+                a=n, modelprior=uniform())
+
+# BIC to approximate reference prior
+HL.BIC = bas.lm(Heating_Load ~ Relative_Compactness + Surface_Area + Wall_Area +
+                      Roof_Area + Overall_Height + Orientation_2+Orientation_3 +Orientation_4 + Glazing_Area +
+                      Glazing_Area_Distribution_0 + Glazing_Area_Distribution_1 + Glazing_Area_Distribution_2 + Glazing_Area_Distribution_3 +  Glazing_Area_Distribution_4, data=train, prior="BIC", 
+                 modelprior=uniform())
+
+# AIC
+HL.AIC = bas.lm(Heating_Load ~ Relative_Compactness + Surface_Area + Wall_Area +
+                      Roof_Area + Overall_Height + Orientation_2+Orientation_3 +Orientation_4 + Glazing_Area +
+                      Glazing_Area_Distribution_0,Glazing_Area_Distribution_1 + Glazing_Area_Distribution_2 + Glazing_Area_Distribution_3 + Glazing_Area_Distribution_4, data=train, prior="AIC", 
+                 modelprior=uniform())
+```
+
+
+```{r}
+probne0_HL = cbind(HL.BIC$probne0, HL.g$probne0, HL.ZS$probne0, HL.HG$probne0,
+                HL.EB$probne0, HL.AIC$probne0)
+
+colnames(probne0_HL) = c("BIC", "g", "ZS", "HG", "EB", "AIC")
+rownames(probne0_HL) = c(HL.BIC$namesx)
+```
+
+
+
+```{r}
+library(ggplot2)
+
+# Generate plot for each variable and save in a list
+P = list()
+for (i in 1:8){
+  mydata = data.frame(prior = colnames(probne0_HL), posterior = probne0_HL[i, ])
+  mydata$prior = factor(mydata$prior, levels = colnames(probne0_HL))
+  p = ggplot(mydata, aes(x = prior, y = posterior)) +
+    geom_bar(stat = "identity", fill = "blue") + xlab("") +
+    ylab("") + 
+    ggtitle(HL.g$namesx[i])
+  P = c(P, list(p))
+}
+
+library(cowplot)
+do.call(plot_grid, c(P))
+```
+#Finish the Zellner part  
+
+
+
+## Bayesian model with MCMC sampler
+```{r}
+HL.ZS =  bas.lm(Heating_Load ~ Relative_Compactness + Surface_Area + Wall_Area +
+                      Roof_Area + Overall_Height + Orientation_2+Orientation_3 +Orientation_4 + Glazing_Area +
+                      Glazing_Area_Distribution_0,Glazing_Area_Distribution_1 + Glazing_Area_Distribution_2 + Glazing_Area_Distribution_3 + Glazing_Area_Distribution_4, data=train, prior="ZS-null", modelprior=uniform(), method = "MCMC") 
+```
+
+```{r}
+diagnostics(HL.ZS, type="pip", col = "blue", pch = 16, cex = 1.5)
+```
+
+
+```{r}
+diagnostics(HL.ZS, type = "model", col = "blue", pch = 16, cex = 1.5)
+```
+
+```{r}
+# Re-run regression using larger number of MCMC iterations
+HL.ZS = bas.lm(Heating_Load ~ Relative_Compactness + Surface_Area + Wall_Area +
+                      Roof_Area + Overall_Height + Orientation_2+Orientation_3 +Orientation_4 + Glazing_Area +
+                      Glazing_Area_Distribution_0,Glazing_Area_Distribution_1 + Glazing_Area_Distribution_2 + Glazing_Area_Distribution_3 + Glazing_Area_Distribution_4, data=train,
+                  prior = "ZS-null", modelprior = uniform(),
+                  method = "MCMC", MCMC.iterations = 10 ^ 6)
+
+# Plot diagnostics again
+diagnostics(HL.ZS, type = "model", col = "blue", pch = 16, cex = 1.5)
+```
+
+
+```{r}
+plot(HL.ZS, which = 1, add.smooth = F, 
+     ask = F, pch = 16, sub.caption="", caption="")
+abline(a = 0, b = 0, col = "darkgrey", lwd = 2)
+```
+
+
+```{r}
+plot(HL.ZS, which=2, add.smooth = F, sub.caption="", caption="")
+```
+
+
+```{r}
+plot(HL.ZS, which=3, ask=F, caption="", sub.caption="")
+```
+
+```{r}
+plot(HL.ZS, which = 4, ask = F, caption = "", sub.caption = "", 
+     col.in = "blue", col.ex = "darkgrey", lwd = 3)
+```
+
+```{r}
+image(HL.ZS, rotate = F)
+
+```
+
+```{r}
+library(BAS)
+
+# Predict Heating_Load using the BMA model (posterior mean predictions)
+hl_predictions <- predict(HL.ZS, newdata = test, estimator = "BMA")
+
+# Extract predicted values
+test$predicted_Heating_Load <- hl_predictions$fit
+
+# Compute Mean Squared Error (MSE)
+actual <- test$Heating_Load
+predicted <- test$predicted_Heating_Load
+
+mse <- mean((actual - predicted)^2)
+rmse <- sqrt(mse)
+
+cat("MSE:", mse, "\n")
+cat("RMSE:", rmse, "\n")
+```
+
+#JAGS Implementation.
+#Heating_Load
+```{r}
+library(rjags)
+
+# Define the JAGS model with unique parameter names
+jags_model <- "
+model {
+  for (i in 1:N) {
+    y[i] ~ dnorm(mu[i], tau)
+    mu[i] <- b0 +
+             b1 * Relative_Compactness[i] +
+             b2 * Surface_Area[i] +
+             b3 * Wall_Area[i] +
+             b4 * Roof_Area[i] +
+             b5 * Overall_Height[i] +
+             b6 * Orientation_2[i] +
+             b7 * Orientation_3[i] +
+             b8 * Orientation_4[i] +
+             b9 * Glazing_Area[i] +
+             b10 * Glazing_Area_Distribution_0[i]+
+             b11 * Glazing_Area_Distribution_1[i]+
+             b12 * Glazing_Area_Distribution_2[i]+
+             b13 * Glazing_Area_Distribution_3[i]+
+             b14 * Glazing_Area_Distribution_4[i]
+  }
+
+  # Priors for coefficients
+  b0 ~ dnorm(0, 0.0001)
+  b1 ~ dnorm(0, 0.0001)
+  b2 ~ dnorm(0, 0.0001)
+  b3 ~ dnorm(0, 0.0001)
+  b4 ~ dnorm(0, 0.0001)
+  b5 ~ dnorm(0, 0.0001)
+  b6 ~ dnorm(0, 0.0001)
+  b7 ~ dnorm(0, 0.0001)
+  b8 ~ dnorm(0, 0.0001)
+  b9 ~ dnorm(0, 0.0001)
+  b10 ~ dnorm(0, 0.0001)
+  b11 ~ dnorm(0, 0.0001)
+  b12 ~ dnorm(0, 0.0001)
+  b13 ~ dnorm(0, 0.0001)
+  b14 ~ dnorm(0, 0.0001)
+
+  tau ~ dgamma(0.001, 0.001)
+  sigma <- 1 / sqrt(tau)
+}
+"
+
+# Create the list of data for JAGS
+jags_data <- list(
+  y = train$Heating_Load,
+  Relative_Compactness = train$Relative_Compactness,
+  Surface_Area = train$Surface_Area,
+  Wall_Area = train$Wall_Area,
+  Roof_Area = train$Roof_Area,
+  Overall_Height = train$Overall_Height,
+  Orientation_2 = train$Orientation_2,
+  Orientation_3 = train$Orientation_3,
+  Orientation_4 = train$Orientation_4,
+  Glazing_Area = train$Glazing_Area,
+  Glazing_Area_Distribution_0 = train$Glazing_Area_Distribution_0,
+  Glazing_Area_Distribution_1 = train$Glazing_Area_Distribution_1,
+  Glazing_Area_Distribution_2 = train$Glazing_Area_Distribution_2,
+  Glazing_Area_Distribution_3 = train$Glazing_Area_Distribution_3,
+  Glazing_Area_Distribution_4 = train$Glazing_Area_Distribution_4,
+  N = nrow(train)
+)
+
+# Initial values with updated names
+inits <- function() {
+  list(
+    b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0,
+    b5 = 0, b6 = 0, b7 = 0, b8 = 0,b9 = 0, b10 = 0, b11= 0, b12=0, b13=0, b14=0, 
+    tau = 1
+  )
+}
+
+# Parameters to monitor
+params <- c("b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8","b9","b10","b11","b12","b13","b14", "sigma")
+
+# Compile and run MCMC
+model <- jags.model(textConnection(jags_model),
+                    data = jags_data,
+                    inits = inits,
+                    n.chains = 1,
+                    n.adapt = 1000)
+
+update(model, 1000)  # burn-in
+
+samples <- coda.samples(model,
+                        variable.names = params,
+                        n.iter = 5000)
+```
+
+```{r}
+# Summary of posterior
+summary(samples)
+
+par(mar = c(4, 4, 2, 2))  # Bottom, Left, Top, Right margins
+
+
+# Diagnostic plots
+plot(samples)
+
+# Gelman-Rubin diagnostic (convergence)
+
+```
+
+
+
+## IMPLEMENT HYPERPARAMETER TUNING USING BAYESIAN MCMC sampler in R
+http://towardsdatascience.com/bayesian-optimization-for-hyperparameter-tuning-how-and-why-655b0ee0b399/
+
+## IMPLEMENT HIERARCIAL MODEL IN JAGS
+https://bookdown.org/kevin_davisross/bayesian-reasoning-and-methods/hierarchical.html
+
+# Define the hierarchical JAGS model
+
+```{r}
+jags_model_hierarchical <- "
+model {
+  # Likelihood
+  for (i in 1:N) {
+    y[i] ~ dnorm(mu[i], tau) # tau is the precision of the model error
+    mu[i] <- b[1] + inprod(X[i,], b[2:K]) # More robust matrix formulation
+  }
+
+  # --- Priors for Coefficients with a Hyperprior ---
+
+  # Vague prior for the intercept (b[1])
+  b[1] ~ dnorm(0, 0.0001)
+
+  # Common prior for all other coefficients (b[2] to b[K])
+  for (j in 2:K) {
+    b[j] ~ dnorm(0, tau_beta) # All slopes share a common precision
+  }
+
+  # --- Hyperpriors ---
+  # This is the 'tuning' part. We let the model learn the precision.
+
+  # Hyperprior for the precision of the coefficients
+  tau_beta ~ dgamma(0.1, 0.1) # Weakly informative hyperprior
+
+  # Prior for the precision of the model error
+  tau ~ dgamma(0.1, 0.1)
+
+
+  # --- Derived Quantities for Easier Interpretation ---
+  sigma <- 1 / sqrt(tau)         # Model error standard deviation
+  sigma_beta <- 1 / sqrt(tau_beta) # Std. dev. of the coefficients
+}
+``` 
+
+
+
+
+
+
+
+
+
+
+
