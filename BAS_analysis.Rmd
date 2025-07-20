@@ -1,0 +1,753 @@
+---
+title: "BAS_Analysis"
+author: "Moein-Taherinezhad and Trygve Tafjord"
+date: "2025-06-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+# Loading Library 
+
+```{r}
+#loading libraries
+library(conflicted)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+library(knitr)
+library(corrplot)
+library(BAS)
+library(bayesplot)
+
+
+
+```
+
+## loading the data and doing initial data exploration
+
+```{r}
+data <- read.csv("Energy_Efficiency.csv")
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+Renaming the columns to make them more understandable
+
+```{r}
+colnames(data) <- c('Relative_Compactness',
+                      'Surface_Area',
+                      'Wall_Area',
+                      'Roof_Area',
+                      'Overall_Height',
+                      'Orientation',
+                      'Glazing_Area',
+                      'Glazing_Area_Distribution',
+                      'Heating_Load',
+                      'Cooling_Load')
+head(data)
+```
+
+## Data Preprocessing
+Before any BAS models are implemented, data preprocessing is performed.
+
+### Log Transform for skeewed data
+As discussed in the data-processing folder, this is useful of getting a more normally distributed dataset.
+```{r}
+
+log_transform_features <- function(data, features_to_transform) {
+  # Create a copy of the data to avoid modifying the original data frame outside the function
+  transformed_data <- data
+  
+  # Loop through the specified feature names
+  for (feature in features_to_transform) {
+    # Check if the feature exists in the data frame
+    if (feature %in% names(transformed_data)) {
+      # Apply the log transformation
+      transformed_data[[feature]] <- log(transformed_data[[feature]])
+    } else {
+      # Print a warning if a specified feature is not found
+      warning(paste("Feature not found in data:", feature))
+    }
+  }
+  
+  # Return the data frame with the transformed features
+  return(transformed_data)
+}
+
+features_to_transform = c("Relative_Compactness", "Wall_Area")
+data = log_transform_features(data, features_to_transform)
+
+
+```
+
+
+### Convert categorical attributes
+
+To convert categorical attributes, replace categorical attributes with m-1 indicator attributes, where m = number of categories. One variable must be removed in order for X to be invertable.
+Note that we don't have that many dimensions, thus we keep all categories. 
+
+```{r}
+encode_categorical_vars <- function(data, categorical_vars) {
+  for (var in categorical_vars) {
+    levels_var <- unique(data[[var]])
+    levels_var <- sort(levels_var)  # Sort to ensure consistent order
+    k <- length(levels_var)
+    
+    # Loop through first k-1 categories
+    for (i in 1:(k - 1)) {
+      level <- levels_var[i]
+      new_col_name <- paste(var, level, sep = "_")
+      data[[new_col_name]] <- ifelse(data[[var]] == level, 1, 0)
+    }
+    
+    # Drop the original categorical column
+    data[[var]] <- NULL
+  }
+  
+  return(data)
+}
+
+categorical_vars <- c("Orientation", "Glazing_Area_Distribution")
+data <- encode_categorical_vars(data, categorical_vars)
+```
+
+Testing that the transformation was done correctly
+```{r}
+# Ensuring the tranformation was completed
+head(data)
+```
+
+
+
+# Model training
+
+The goal of this sections is to perform linear regression in the Bayesian framework. The linear model is given by:
+ 
+$$
+y = X\beta+\epsilon  
+$$
+where
+$$
+\epsilon \sim \mathcal{N}(0, \sigma^2)
+$$
+
+
+The likelihood of $y$ given $\beta$, $\sigma^2$, and $X$ is normally distributed:
+
+$$
+y|\beta, \sigma^2, X \sim \mathcal{N}(X\beta, \sigma^2 I_n) \quad \text{likelihood}
+$$
+
+The prior distribution for the parameters $(\beta, \sigma^2)$ is given by $\pi(\beta, \sigma^2)$:
+
+$$
+(\beta, \sigma^2) \sim \pi(\beta, \sigma^2) \quad \text{prior}
+$$
+The objective of this analysis is to find good prior distributions.
+
+
+### Splitting the data into a training set and a test set.
+
+Note that **heating load** is the only target variable that is subject to analysis, before any models are created, the data is split into a training set and test set. 
+We will test on  
+
+```{r}
+set.seed(42)
+
+#use 80% of dataset as training set and 20% as test set
+sample <- sample(c(TRUE, FALSE), nrow(data), replace=TRUE, prob=c(0.8,0.2))
+training_data  <- data[sample, ]
+test_data   <- data[!sample, ]
+
+```
+
+
+#### Scaling the dataset 
+note that we only use the training set to calculate mean and sig2 to avoid dataleakage
+Scaling the data can make it easier to interpret and compare the model coefficients. However, it is to be noted that the dataset is relativly small, having 768 observations. 
+Thus it is not guarantied that the dataset is representative for future data, causing the model to have potential large errors. 
+Furhter more, it is not certain that the coefissiant are gausian. As described earlier some coefficiants have a slight skeewness. 
+
+```{r}
+
+# Define the features to be scaled, not scaling categorical variables
+numeric_features <- c('Relative_Compactness', 'Surface_Area', 'Wall_Area', 'Roof_Area', 'Overall_Height', 'Glazing_Area')
+
+# Calculate scaling parameters from the training set
+train_means <- colMeans(training_data[, numeric_features])
+train_sds <- apply(training_data[, numeric_features], 2, sd)
+
+# Scale both the training and test sets using these parameters
+training_data[, numeric_features] <- scale(training_data[, numeric_features], center = train_means, scale = train_sds)
+test_data[, numeric_features] <- scale(test_data[, numeric_features], center = train_means, scale = train_sds)
+
+# Verifying, the mean of the scaled training data should be ~0 and sd ~1.
+print("Scaled Training Set Summary:")
+summary(training_data[, numeric_features])
+
+```
+
+
+# Bayesian Multiple Linear Regression using BAS
+
+## Model Selection using BAS
+
+Based on the initial data anbalysis, it is suspect the features **Orientation**, **Orientation** and **Glazing_Area_Distribution** parameters to not be selected from the model, this due to their mean being close to zero.
+Note that due to setting the modelprior to uniform there are 2^14 potential models, now each model has a prior probability of 1/16384 = 0.00006. 
+
+```{r}
+
+HL.ModelSelection = bas.lm(Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4,
+                               data = training_data, prior = "g-prior", 
+                               modelprior = uniform(),     
+                               alpha  = nrow(data)) #The hyperparameter is set to be equal to the number of data points such that the model mostly learns from the data to give a non informative prior
+                                
+
+
+
+HL.coef = coef(HL.ModelSelection, estimator = "HPM") #Setting the estimator to Hghest Priority Model
+HL.models = data.frame(Models = sapply(HL.ModelSelection$which,paste,collapse=','))
+HL.postprobs = round(HL.ModelSelection$postprobs,2)
+
+# Model posterior probabilities of selection:
+# Now, sort it in descending order based on the PostProbs column
+post_probs_df <- data.frame(PostProbs = HL.postprobs, row.names = HL.models$Models)
+
+sorted_post_probs <- post_probs_df[order(post_probs_df$PostProbs, decreasing = TRUE), , drop = FALSE]
+
+# Print the top models
+head(sorted_post_probs)
+```
+
+None of the models performed exceptionally well, which indicates high model uncertainty possibly caused by correlated predictors and general model uncertainty. 
+The respective features for the optimal model are; "Intercept", "Relative_Compactness", "Wall_Area", "Roof_Area", "Overall_Height", "Glazing_Area", "Glazing_Area_Distribution_0"
+
+There is a set of parameters that provide the best results, we will now train a model with these parameters using Highest Posterior Model (HPM) and test it against a model with all parameters, as well as a using Bayesian Model Averaging (BMA).
+This test will lay the foundation for future model selection.
+
+Defining a test helperfunction
+```{r}
+
+test_model <- function(bas_model, data, esimator) {
+  # This function takes a fitted BAS model, a name string, a data frame, and an estimator then
+  # calculates performance metrics and plots the predictive intervals.
+
+  # Get the posterior mean predictions using Bayesian Model Averaging (BMA)
+  predictions <- predict(bas_model, newdata = data, estimator = esimator)
+  
+  # Calculate the MSE between the predicted values and the actual test values
+  mse <- mean((data$Heating_Load - predictions$fit)^2)
+  
+  # Get predictions again, this time with standard errors for interval calculation
+  preds_with_se <- predict(bas_model, newdata = data, estimator = esimator, se.fit = TRUE)
+  
+  # Calculate the 95% predictive credible intervals
+  pred_intervals <- confint(preds_with_se, parm = "pred")
+  
+  # Check which of the true y_test values fall outside the interval
+  outside_interval <- (data$Heating_Load < pred_intervals[, 1]) | (data$Heating_Load > pred_intervals[, 2])
+  num_outside <- sum(outside_interval)
+  total_test <- nrow(data)
+  percent_outside <- (num_outside / total_test) * 100
+  
+  return(c(mse, num_outside, percent_outside))
+}
+
+
+```
+
+Testing models
+```{r}
+# fit and generate predictions for the Full Model (all predictors included)
+# We force all variables to be included by setting modelprior = Bernoulli(1)
+HL.FullModel <- bas.lm(Heating_Load ~ Relative_Compactness + 
+                                      Surface_Area + 
+                                      Wall_Area + 
+                                      Roof_Area + 
+                                      Overall_Height + 
+                                      Orientation_2 + 
+                                      Orientation_3 + 
+                                      Orientation_4 + 
+                                      Glazing_Area + 
+                                      Glazing_Area_Distribution_0 + 
+                                      Glazing_Area_Distribution_1 + 
+                                      Glazing_Area_Distribution_2 + 
+                                      Glazing_Area_Distribution_3 + 
+                                      Glazing_Area_Distribution_4,,
+                                      data = training_data,
+                                      prior = "g-prior",
+                                      alpha = nrow(data),
+                                      modelprior = Bernoulli(1), # Force inclusion of every variable
+                                      include.always = ~ .)       
+
+#test models
+FullModel_result <- test_model(HL.FullModel, test_data, "BMA")
+BMA_result <- test_model(HL.ModelSelection, test_data, "BMA")
+HPM_result <- test_model(HL.ModelSelection, test_data, "HPM")
+
+#create test dataframe
+comparison_df <- data.frame(
+  Model = c("Bayesian Model Averaging (BMA)", "Highest Posterior Model (HPM)", "Full Model"),
+  MSE = c(BMA_result[1], HPM_result[1], FullModel_result[1]),
+  Num_Outside_Interval = c(BMA_result[2], HPM_result[2], FullModel_result[2]),
+  Percent_Outside_Interval = c(BMA_result[3], HPM_result[3], FullModel_result[3])
+)
+
+
+# Print the final table
+print(comparison_df)
+```
+
+
+
+
+
+In the BAS package, the bas.lm function uses two distinct types of priors to conduct Bayesian Model Averaging (BMA):
+
+Prior on Coefficients (prior): This argument defines the prior distribution for the regression coefficients (β) within a specific model. It reflects our beliefs about the parameters' values, assuming that model is the correct one. In this analysis, we use prior = "BIC", which uses the Bayesian Information Criterion as an approximation for the marginal likelihood, effectively placing a complexity penalty on the model.
+
+Prior on Model Space (modelprior): This argument sets a prior distribution over all possible models. It represents our belief about the likelihood of any combination of predictors being the "true" model, before we have seen the data. We use modelprior = Bernoulli(1), which forces a prior inclusion probability of 1 for every variable. This is a strong prior belief that all variables are relevant and should be included in the final model. By analysing the confidence intervalls, we can determine if this is a good assumption. 
+
+Together, these priors allow BAS to calculate the posterior probability of each model and average over them to produce robust estimates.
+
+```{r}
+HL.bas = bas.lm(Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4,
+                               data = training_data, prior = "BIC", 
+                               modelprior = Bernoulli(1),  #Bernoulli(1) consideres all features equally. 
+                               include.always = ~ ., n.models = 1)
+```
+
+Extracting coefficients
+```{r}
+HL.coef = coef(HL.bas)
+HL.coef
+```
+
+```{r}
+plot(HL.coef, ask = F)
+confint(HL.coef)
+
+```
+Plotting the confident intervals for each parameter. Parameters that don't have a interval that extends zero are contenders for not being set to zero.  
+```{r}
+
+plot(confint(HL.coef), main="BIC prior", las = 2)
+
+```
+Based on this plot, it is a bad assumption to assume all parameters being non-zero, thus we should perform some model selection.
+
+Plotting target value against mean of predictive distribution of subject i. If our model is perfect, all points appear on the line y=hat(mu[i]).
+There is a notable trend towards a higher variation in both the training and test-set in the target heating load and mean of predictive distribution as the tagret heating load increases. 
+```{r}
+
+fitted <- predict(HL.bas, estimator = "BMA")
+newdata <- predict(HL.bas, newdata = test_data, estimator = "BMA")
+
+
+# Plot the predicted vs. actual values for the TRAINING data (black points)
+# Following the lecture format: Predicted on X-axis, Actual on Y-axis
+plot(fitted$fit, training_data$Heating_Load,
+     main = "Predicted vs. Actual Heating Load",
+     xlab = expression(hat(mu[i])),
+     ylab = "Actual Heating Load",
+     pch = 16,          # Use solid circles
+     ) 
+
+# Add the predicted vs. actual values for the TEST data (red points)
+points(newdata$fit, test_data$Heating_Load,
+       pch = 16,
+       col = "red")
+
+abline(0, 1, col = "blue")
+
+# Add a legend to clarify the points
+legend("topleft",
+       legend = c(paste("In-sample prediction, n =", nrow(training_data)), paste("Out-of-sample prediction, n =", nrow(test_data))),
+       col = c("black", "red"),
+       pch = 16,
+       bty = "n") # No box around the legend
+
+```
+
+
+
+
+
+
+
+
+
+
+## BAS models
+To perform a sensitivity analysis and assess the robustness of our variable selection, we evaluated the model under several different prior specifications for the regression coefficients using the BAS package. For all models, we used a uniform() prior on the model space, which assigns equal probability to all possible models, reflecting an initial lack of preference for any particular model size.
+
+The coefficient priors we analyzed are:
+
+Unit Information g-prior (g-prior): This is Zellner's g-prior where the scaling factor g is set equal to the sample size n. This choice calibrates the amount of information in the prior to be equivalent to that of a single observation, providing a standard baseline for model comparison.
+
+Zellner-Siow Prior (JZS): This is a more robust mixture of g-priors. Instead of fixing g, it places a Cauchy prior on the coefficients, which is equivalent to placing an Inverse-Gamma prior on g. This allows the data to inform the amount of shrinkage and is known for its good theoretical properties, often leading to more conservative model selection than a fixed g-prior.
+
+Hyper-g/n Prior (hyper-g-n): This is another flexible mixture of g-priors that is designed to have good consistency properties, especially when the true model is the null model. It places a Beta prior on a transformation of g, providing an adaptive level of shrinkage.
+
+Empirical Bayes Prior (EB-local): This approach estimates the shrinkage parameter g directly from the data for each model independently by maximizing the marginal likelihood. It is an adaptive method where the prior is determined by the data itself, rather than being fixed beforehand.
+
+BIC and AIC Priors: These are not traditional priors but rather information criteria used to approximate the log marginal likelihood of each model.
+
+BIC (prior="BIC") applies a strong penalty for model complexity, which generally leads to more parsimonious models (fewer variables). It is known to be a conservative choice for model selection.
+
+AIC (prior="AIC") applies a weaker penalty for complexity compared to BIC. It is therefore considered more liberal and tends to favor models with a larger number of predictors.
+
+By comparing the results from these different priors, we can identify which predictors are consistently important across various analytical assumptions, thereby increasing our confidence in the final conclusions.
+
+```{r}
+# Unit information prior
+HL.g = bas.lm( Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4, 
+                               data=training_data, prior="g-prior", 
+                               alpha=nrow(training_data), #a is the hyperparameter in this case g=n, which makes it an unformative prior where we let the data dominate the posterior
+                               modelprior=uniform())
+
+
+# Zellner-Siow prior with Jeffrey's reference prior on sigma^2
+HL.ZS = bas.lm( Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4, 
+                               data=training_data, prior="JZS", 
+                               modelprior=uniform())
+
+# Hyper g/n prior
+HL.HG = bas.lm(Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4, 
+                               data=training_data, prior="JZS", a=3,  #hyperparameter a=3
+                               modelprior=uniform()) 
+
+# Empirical Bayesian estimation under maximum marginal likelihood
+HL.EB = bas.lm(Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4, 
+                               data=training_data, prior="JZS", 
+                               modelprior=uniform())
+
+# BIC to approximate reference prior
+HL.BIC = bas.lm(Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4, 
+                               data=training_data, prior="BIC", 
+                               modelprior=uniform())
+
+# AIC
+HL.AIC = bas.lm(Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4, 
+                               data=training_data, prior="AIC", 
+                               modelprior=uniform())
+```
+
+Plotting the confidence intervals for the differnet BAS models
+
+```{r}
+
+# Plot for Unit Information g-prior
+plot(confint(coef(HL.g)), main = "Confidence intervall for g-prior", las = 2)
+
+## Plot for Zellner-Siow prior
+plot(confint(coef(HL.ZS)), main = "Zellner-Siow Prior", las = 2)
+
+## Plot for Hyper-g/n prior
+plot(confint(coef(HL.HG)), main = "Hyper-g/n Prior", las = 2)
+
+## Plot for Empirical Bayes prior
+plot(confint(coef(HL.EB)), main = "Empirical Bayes Prior", las = 2)
+
+## Plot for BIC
+plot(confint(coef(HL.BIC)), main = "BIC Prior", las = 2)
+
+## Plot for AIC
+plot(confint(coef(HL.AIC)), main = "AIC Prior", las = 2)
+
+```
+Getting an overview of model performances. 
+
+
+
+Defining a function to print MSE and number of prediction outside the 0.95% predictive interval
+```{r}
+analyze_bas_predictions <- function(bas_model, model_name, data) {
+  # This function takes a fitted BAS model, a name string, and a data frame, then
+  # calculates performance metrics and plots the predictive intervals.
+
+  # Get the posterior mean predictions using Highest Posterior Model (HPM)
+  predictions <- predict(bas_model, newdata = data, estimator = "HPM")
+  
+  # Calculate the MSE between the predicted values and the actual test values
+  mse <- mean((data$Heating_Load - predictions$fit)^2)
+  
+  # Get predictions again, this time with standard errors for interval calculation
+  preds_with_se <- predict(bas_model, newdata = data, estimator = "HPM", se.fit = TRUE)
+  
+  # Calculate the 95% predictive credible intervals
+  pred_intervals <- confint(preds_with_se, parm = "pred")
+  
+  # Check which of the true y_test values fall outside the interval
+  outside_interval <- (data$Heating_Load < pred_intervals[, 1]) | (data$Heating_Load > pred_intervals[, 2])
+  num_outside <- sum(outside_interval)
+  total_test <- nrow(data)
+  percent_outside <- (num_outside / total_test) * 100
+  
+  cat("--------------------------------------------------\n")
+  cat("Analysis for:", model_name, "\n")
+  cat("Test MSE:", mse, "\n")
+  cat(sprintf("Number of test points: %d\n", total_test))
+  cat(sprintf("Number of points outside the 95%% predictive interval: %d (%.2f%%)\n", num_outside, percent_outside))
+  cat("--------------------------------------------------\n\n")
+
+}
+
+
+```
+
+
+```{r}
+
+# Analyze the Unit Information g-prior model
+analyze_bas_predictions(HL.g, "Unit Information g-prior", test_data)
+
+# Analyze the Zellner-Siow prior model
+analyze_bas_predictions(HL.ZS, "Zellner-Siow Prior", test_data)
+
+# Analyze the Hyper-g/n prior model
+analyze_bas_predictions(HL.HG, "Hyper-g/n Prior", test_data)
+
+# Analyze the Empirical Bayes prior model
+analyze_bas_predictions(HL.EB, "Empirical Bayes Prior", test_data)
+
+# Analyze the BIC model
+analyze_bas_predictions(HL.BIC, "BIC Prior", test_data)
+
+# Analyze the AIC model
+analyze_bas_predictions(HL.AIC, "AIC Prior", test_data)
+
+# Reset graphical parameters
+par(ask = FALSE)
+```
+
+
+
+```{r}
+probne0_HL = cbind(HL.BIC$probne0, HL.g$probne0, HL.ZS$probne0, HL.HG$probne0,
+                HL.EB$probne0, HL.AIC$probne0)
+
+colnames(probne0_HL) = c("BIC", "g", "ZS", "HG", "EB", "AIC")
+rownames(probne0_HL) = c(HL.BIC$namesx)
+```
+
+
+
+```{r}
+library(ggplot2)
+
+# Generate plot for each variable and save in a list
+P = list()
+for (i in 1:15){
+  mydata = data.frame(prior = colnames(probne0_HL), posterior = probne0_HL[i, ])
+  mydata$prior = factor(mydata$prior, levels = colnames(probne0_HL))
+  p = ggplot(mydata, aes(x = prior, y = posterior)) +
+    geom_bar(stat = "identity", fill = "blue") + xlab("") +
+    ylab("") + 
+    ggtitle(HL.g$namesx[i])
+  #P = c(P, list(p))
+  print(p)
+}
+
+#library(cowplot)
+#do.call(plot_grid, c(P))
+```
+
+
+
+
+## Bayesian model with MCMC sampler
+```{r}
+HL.MCMC =  bas.lm(Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4, 
+                               data=training_data, prior="ZS-null", 
+                               modelprior=uniform(), method = "MCMC") 
+```
+
+```{r}
+diagnostics(HL.MCMC, type="pip", col = "blue", pch = 16, cex = 1.5)
+```
+
+
+```{r}
+diagnostics(HL.MCMC, type = "model", col = "blue", pch = 16, cex = 1.5)
+```
+Checking out-of-sample MSE and points outside the confidence interval
+```{r}
+analyze_bas_predictions(HL.MCMC, "Bayesian model with MCMC sampler", test_data)
+
+```
+
+
+```{r}
+# Re-run regression using larger number of MCMC iterations
+HL.ZS = bas.lm(Heating_Load ~ Relative_Compactness + 
+                               Surface_Area + 
+                               Wall_Area + 
+                               Roof_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4, 
+                               data=training_data, prior = "ZS-null", 
+                               modelprior = uniform(), method = "MCMC",
+                               MCMC.iterations = 10 ^ 6)
+
+# Plot diagnostics again
+diagnostics(HL.ZS, type = "model", col = "blue", pch = 16, cex = 1.5)
+```
+```{r}
+plot(HL.ZS, which = 1, add.smooth = F, 
+     ask = F, pch = 16, sub.caption="", caption="")
+abline(a = 0, b = 0, col = "darkgrey", lwd = 2)
+```
+```{r}
+plot(HL.ZS, which=2, add.smooth = F, sub.caption="", caption="")
+```
+```{r}
+plot(HL.ZS, which = 4, ask = F, caption = "", sub.caption = "", 
+     col.in = "blue", col.ex = "darkgrey", lwd = 3)
+```
+
+```{r}
+analyze_bas_predictions(HL.ZS, "Bayesian model with MCMC sampler and larger number of iterations", test_data)
+
+```
+
+
+
+

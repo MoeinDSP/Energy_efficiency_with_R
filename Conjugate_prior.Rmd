@@ -1,0 +1,398 @@
+---
+title: "Conjugate_Prior"
+author: "Moein-Taherinezhad and Trygve Tafjord"
+date: "2025-06-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+# Loading Library 
+
+```{r}
+#loading libraries
+library(conflicted)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+library(knitr)
+library(corrplot)
+library(BAS)
+library(bayesplot)
+
+```
+
+## loading the data and doing initial data exploration
+
+```{r}
+data <- read.csv("Energy_Efficiency.csv")
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+Renaming the columns to make them more understandable
+
+```{r}
+colnames(data) <- c('Relative_Compactness',
+                      'Surface_Area',
+                      'Wall_Area',
+                      'Roof_Area',
+                      'Overall_Height',
+                      'Orientation',
+                      'Glazing_Area',
+                      'Glazing_Area_Distribution',
+                      'Heating_Load',
+                      'Cooling_Load')
+```
+
+## Data Preprocessing
+Before any BAS models are implemented, data preprocessing is performed. This is the same across the files
+
+### Log Transform for skeewed data
+As discussed in the data-processing folder, this is useful of getting a more normally distributed dataset.
+```{r}
+
+log_transform_features <- function(data, features_to_transform) {
+  # Create a copy of the data to avoid modifying the original data frame outside the function
+  transformed_data <- data
+  
+  # Loop through the specified feature names
+  for (feature in features_to_transform) {
+    # Check if the feature exists in the data frame
+    if (feature %in% names(transformed_data)) {
+      # Apply the log transformation
+      transformed_data[[feature]] <- log(transformed_data[[feature]])
+    } else {
+      # Print a warning if a specified feature is not found
+      warning(paste("Feature not found in data:", feature))
+    }
+  }
+  
+  # Return the data frame with the transformed features
+  return(transformed_data)
+}
+
+features_to_transform = c("Relative_Compactness", "Wall_Area")
+data = log_transform_features(data, features_to_transform)
+
+
+```
+
+
+### Convert categorical attributes
+
+To convert categorical attributes, replace categorical attributes with m-1 indicator attributes, where m = number of categories. One variable must be removed in order for X to be invertable.
+Note that we don't have that many dimensions, thus we keep all categories. 
+
+```{r}
+encode_categorical_vars <- function(data, categorical_vars) {
+  for (var in categorical_vars) {
+    levels_var <- unique(data[[var]])
+    levels_var <- sort(levels_var)  # Sort to ensure consistent order
+    k <- length(levels_var)
+    
+    # Loop through first k-1 categories
+    for (i in 1:(k - 1)) {
+      level <- levels_var[i]
+      new_col_name <- paste(var, level, sep = "_")
+      data[[new_col_name]] <- ifelse(data[[var]] == level, 1, 0)
+    }
+    
+    # Drop the original categorical column
+    data[[var]] <- NULL
+  }
+  
+  return(data)
+}
+
+categorical_vars <- c("Orientation", "Glazing_Area_Distribution")
+data <- encode_categorical_vars(data, categorical_vars)
+```
+
+Testing that the transformation was done correctly
+```{r}
+# Ensuring the tranformation was completed
+head(data)
+```
+### using frequentistic regression to get suggested prior hyperparameters
+```{r}
+
+perform_univariate_regression <- function(dataset, response_var = "Heating_Load") {
+  
+  # Note on "Hyperparameters": The standard frequentist linear regression model (lm)
+  # does not have hyperparameters to tune in the way a Bayesian model does (like the
+  # one in your Rmd file). It estimates coefficients directly from the data using
+  # methods like Ordinary Least Squares (OLS). Therefore, this function focuses on
+  # fitting the model and extracting the coefficients as requested.
+
+  # Get the names of all predictor variables
+  predictor_vars <- names(dataset)[names(dataset) != response_var]
+  
+  cat("--- Running Univariate Regressions ---\n")
+  cat("Response Variable: ", response_var, "\n\n")
+  
+  # Loop through each predictor variable
+  for (predictor in predictor_vars) {
+    
+    # Create the regression formula, e.g., "Heating_Load ~ Relative_Compactness"
+    formula_str <- paste(response_var, "~", predictor)
+    formula_obj <- as.formula(formula_str)
+    
+    # Perform the frequentist linear regression using the lm() function
+    model <- lm(formula_obj, data = dataset)
+    
+    # Extract all coefficients from the model (intercept and slope)
+    coefficients <- coef(model)
+    
+    # The beta coefficient for the predictor is the second element.
+    # The first element is the intercept.
+    beta_coefficient <- coefficients[predictor]
+    
+    # Print the result in a clean format
+    cat(sprintf("Feature: %-30s | Beta Coefficient: %f\n", predictor, beta_coefficient))
+  }
+  
+  cat("\n--- Analysis Complete ---\n")
+}
+
+perform_univariate_regression(data)
+```
+
+
+
+# Model training
+In this file, we will test a conjugate model on the data. 
+
+### Splitting the data into a training set and a test set.
+
+Note that **heating load** is the only target variable that is subject to analysis, before any models are created, the data is split into a training set and test set. 
+We will test on  
+
+```{r}
+set.seed(42)
+
+#use 80% of dataset as training set and 20% as test set
+sample <- sample(c(TRUE, FALSE), nrow(data), replace=TRUE, prob=c(0.8,0.2))
+training_data  <- data[sample, ]
+test_data   <- data[!sample, ]
+
+```
+
+
+#### Scaling the dataset 
+note that we only use the training set to calculate mean and sig2 to avoid dataleakage
+Scaling the data can make it easier to interpret and compare the model coefficients. However, it is to be noted that the dataset is relativly small, having 768 observations. 
+Thus it is not guarantied that the dataset is representative for future data, causing the model to have potential large errors. 
+Furhter more, it is not certain that the coefissiant are gausian. As described earlier some coefficiants have a slight skeewness. 
+
+```{r}
+
+# Define the features to be scaled, not scaling categorical variables
+numeric_features <- c('Relative_Compactness', 'Surface_Area', 'Wall_Area', 'Roof_Area', 'Overall_Height', 'Glazing_Area')
+
+# Calculate scaling parameters from the training set
+train_means <- colMeans(training_data[, numeric_features])
+train_sds <- apply(training_data[, numeric_features], 2, sd)
+
+# Scale both the training and test sets using these parameters
+training_data[, numeric_features] <- scale(training_data[, numeric_features], center = train_means, scale = train_sds)
+test_data[, numeric_features] <- scale(test_data[, numeric_features], center = train_means, scale = train_sds)
+
+# Verifying, the mean of the scaled training data should be ~0 and sd ~1.
+print("Scaled Training Set Summary:")
+summary(training_data[, numeric_features])
+
+```
+
+### Conjugate prior
+Conjugate priors have posteriors that can be easily calculated without simulation. However, there are many hyperparameters to tune. The prior distribution is the following:
+$$
+\beta|\sigma^2 \sim \mathcal{N}_{k+1}(\tilde{\beta}, \sigma^2 M^{-1}),
+$$
+
+$$
+\sigma^2 \sim \mathcal{IG}(a, b)   
+$$
+The hyper parameters to tune are $a$, $b$ and $M$ where $M$ is a $(k-1)(k-1)$ matrix and $k$ is the number of attributes in the dataset.   
+
+For the conjugate prior we need to extract X and y form the data set. Note that due to computationally complexity, we need to perform some model-selection to remove some features. Otherwise the model is to close to a singularity. 
+Features that are highly correlated are removed, this is determined based on the correlation-matrix to be **Surface_Area** and **Roof_Area** due to geometric relation and high correlation with Relative_Compactness.
+
+
+
+```{r}
+formula_full <- Heating_Load ~ Relative_Compactness + 
+                               Wall_Area + 
+                               Overall_Height + 
+                               Orientation_2 + 
+                               Orientation_3 + 
+                               Orientation_4 + 
+                               Glazing_Area + 
+                               Glazing_Area_Distribution_0 + 
+                               Glazing_Area_Distribution_1 + 
+                               Glazing_Area_Distribution_2 + 
+                               Glazing_Area_Distribution_3 + 
+                               Glazing_Area_Distribution_4
+
+# Training set
+X <- model.matrix(formula_full, data = training_data)
+y <- as.matrix(training_data["Heating_Load"])
+
+#Test set
+X_test <- model.matrix(formula_full, data = test_data)
+y_test <- as.matrix(test_data["Heating_Load"])
+
+
+```
+
+
+#### Hyper parameters
+
+Testing a model with no information on the prior. Using $$M = I_{k+1}/c$$ to reduce the number of hyperparameters, this can be further justified because the data is scaled, having zero mean and 1 sd. Using large values on diagonal (imply high variance) to force the learning to come from the data. 
+Note that the high number of hyperparameters are the main drawback for Conjugate Models, since tuning is very difficult.
+
+Finding the posterior analytically:
+```{r}
+
+# Get the dimension, note that X already have intercept-columns
+k<-ncol(X) 
+n<-nrow(X)
+
+#defining hyperparameters:
+a<-1    #low to get a flat distribution to account for uncertainty in prior 
+b<-1    #low to get a flat distribution to account for uncertainty in prior
+beta_pri <- rep(0, k) #zero since the data is scaled
+
+
+
+c<-0.1   #small to account for uncertainty in prior, this allows for a large number for beta values. 
+M <- diag(k) * c
+
+#calculating posterior
+XtX <- t(X) %*% X
+beta_hat <- solve(XtX) %*% t(X) %*% y
+s2 <- t(y-X %*% beta_hat) %*% (y-X%*%beta_hat)
+
+beta_post_cm <- solve(M + XtX) %*% (XtX %*% beta_hat+M %*% beta_pri)
+M_post    <- solve(M+XtX)
+a_post    <- n/2 + a
+b_post    <- b + s2/2 + 1/2* (t(beta_post_cm-beta_hat) %*% solve(solve(M) + solve(XtX)) %*% (beta_post_cm-beta_hat))
+
+#Ensure values are numeric
+a_post <- as.numeric(a_post)
+b_post <- as.numeric(b_post)
+```
+
+Analyzing the beta coefficients to see what coefficients are relevant for the response
+```{r}
+
+print_beta <- function(beta_vector, names = NULL) {
+  beta_values <- as.vector(beta_vector)  # Ensure it's a numeric vector
+  
+  if (is.null(names)) {
+    names <- paste0("Beta_", seq_along(beta_values))
+  }
+
+  for (i in seq_along(beta_values)) {
+    cat(names[i], ": ", round(beta_values[i], 4), "\n")
+  }
+}
+
+print_beta(beta_post_cm)
+```
+Based on this, it is evident that Beta_1 = Intercept, Beta_4 = Overall_Height , Beta_8 = Glazing_Area and Beta_9 = Glazing_Area_Distribution_0  are the most influentian parameters. This aligns well with the model correlation matrix analysis
+
+### Result and Analysis for the conjugate model
+
+Finding and plotting the distributions for the coefficients
+
+```{r}
+# beta_post_cm, M_post, a_post, b_post, X, y are fetched from the model
+
+# Getting the number of coefficients
+k <- length(beta_post_cm)
+
+# Get feature names for plotting
+feature_names <- colnames(X)
+if (is.null(feature_names)) {
+  feature_names <- c("Intercept", paste0("X", 1:(k-1)))
+}
+
+# Loop through each coefficient to plot its posterior density
+for (j in 1:k) {
+  # Calculate the posterior mean for beta_j
+  mean_beta_j <- beta_post_cm[j]
+
+  df_beta_j <- 2 * as.numeric(a_post) # Convert a_post to numeric
+  # Convert b_post and a_post to numeric to avoid recycling warnings
+  scale_beta_j <- sqrt(M_post[j,j] * as.numeric(b_post) / as.numeric(a_post)) # Scale parameter for the t-distribution
+
+  # Define a range for plotting
+  x_vals <- seq(mean_beta_j - 4 * scale_beta_j, mean_beta_j + 4 * scale_beta_j, length.out = 500)
+
+  # Plot the density
+  plot(x_vals, dt((x_vals - mean_beta_j) / scale_beta_j, df = df_beta_j) / scale_beta_j,
+       type = "l",
+       xlab = expression(beta),
+       ylab = "Density",
+       main = paste("Posterior Density of", feature_names[j]),
+       lwd = 2, col = "blue")
+  abline(v = mean_beta_j, col = "red", lty = 2) # Mark the posterior mean
+}
+
+```
+
+#### CALCULATE PREDICTION COVERAGE ON THE TEST SET
+
+Calculate the posterior predictive distribution parameters for each test point
+Predictive mean
+
+```{r}
+
+pred_mean <- X_test %*% beta_post_cm
+
+# Predictive variance
+# Here we calculate the variance of the posterior predictive distribution. 
+pred_var_scale <- b_post / a_post #Used to calculate E[sig2 ∣ data].
+pred_var <- pred_var_scale * (1 + diag(X_test %*% solve(M + XtX) %*% t(X_test)))
+
+# Predictive scale (standard deviation)
+pred_scale <- sqrt(pred_var)
+
+# Degrees of freedom for the predictive t-distribution
+df_pred <- 2 * a_post
+
+# Calculate 95% predictive intervals for each test point
+pred_int_lower <- pred_mean + qt(0.025, df = df_pred) * pred_scale
+pred_int_upper <- pred_mean + qt(0.975, df = df_pred) * pred_scale
+
+# Check which of the true y_test values fall outside the interval
+outside_interval <- (y_test < pred_int_lower) | (y_test > pred_int_upper)
+num_outside <- sum(outside_interval)
+total_test <- length(y_test)
+percent_outside <- (num_outside / total_test) * 100
+
+cat(sprintf("Number of test points: %d\n", total_test))
+cat(sprintf("Number of points outside the 95%% predictive interval: %d\n", num_outside))
+cat(sprintf("Percentage of points outside the 95%% predictive interval: %.2f%%\n", percent_outside))
+
+# Finding the MSE using the mean posterior beta values
+predictions_conjugate_model <- X_test %*% beta_post_cm
+
+mse <- mean((y_test - predictions_conjugate_model)^2)
+cat("Test MSE:", mse, "\n")
+```
+
+The model performs poorly, this is most likely due to the removal of the two features Surface_Area and Roof_Area being removed, tuning the parameter c gave little result as well No more time will be used on the Conjugate model due to this, however it was a nice exercise.
+

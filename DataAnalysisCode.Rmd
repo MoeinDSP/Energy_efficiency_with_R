@@ -1,0 +1,365 @@
+---
+title: "InitialDataAnalysis"
+author: "Moein-Taherinezhad and Trygve-Tafjord"
+output: html_document
+date: "2025-07-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+# Loading Library 
+
+```{r}
+#loading libraries
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+library(knitr)
+library(corrplot)
+```
+
+## loading the data and doing initial data exploration
+
+```{r}
+data <- read.csv("Energy_Efficiency.csv")
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+Renaming the columns to make them more understandable
+
+```{r}
+colnames(data) <- c('Relative_Compactness',
+                      'Surface_Area',
+                      'Wall_Area',
+                      'Roof_Area',
+                      'Overall_Height',
+                      'Orientation',
+                      'Glazing_Area',
+                      'Glazing_Area_Distribution',
+                      'Heating_Load',
+                      'Cooling_Load')
+```
+
+
+```{r}
+
+summary(data) #basic ex properties for the data
+str(data)     #type of data and counts
+
+```
+It is worth noting that there are two response variables and eight features, where two features are categorical variables. 
+In total there are 768 observations. This is not a huge data set, however it is fitting to the limited number of features.    
+
+
+
+### Cleaning missing or blank observations
+
+```{r}
+colSums(is.na(data))
+```
+
+We do not have any missing data. 
+
+```{r}
+colSums(data == "")
+```
+We do not have any blank observations, thus som data visualoization is performed.
+
+## Data Visualization
+
+### Histograms
+```{r}
+plot_feature_histograms <- function(data, exclude_cols = c("Heating_Load", "Cooling_Load")) {
+  numeric_features <- names(data)[sapply(data, is.numeric)]
+  features_to_plot <- setdiff(numeric_features, exclude_cols)
+  n_features <- length(features_to_plot)
+  
+  # Set layout for plotting
+  old_par <- par(mfrow = c(ceiling(1), 1), mar = c(4, 4, 3, 2) + 0.1)
+
+  for (feature in features_to_plot) {
+    x <- data[[feature]]
+    
+    hist(x,
+         main = feature,
+         xlab = feature,
+         ylab = "Frequency",
+         col = "skyblue",
+         border = "white")
+  }
+
+  # Reset par settings
+  par(old_par)
+}
+
+# Call the function on your dataset
+plot_feature_histograms(data)
+
+
+
+
+```
+Based on the histograms, it can be concluded that Orientation and Glazing_Area_distribution are categorical variables, holding 4 and 5 different values. 
+The histograms also reveals that the features vary widely in their value ranges. Such disparities can make it difficult to compare the contributions from different coefficients, as features with larger numerical values may disproportionately influence the results. 
+To address this, we can scale the data set.
+
+
+### Analysis of skewness in data
+For strictly positive values with a skeewnes, it is beneficial to perform a log-transform to get a more normally distributed feature. 
+A helperfunction for calculating skewness is made
+```{r}
+
+calculate_skewness_score <- function(data) {
+
+  n <- length(data)
+  mean_data <- mean(data)
+  sd_data <- sd(data)
+  
+  skewness_value <- (n * sum((data - mean_data)^3)) / ((n - 1) * (n - 2) * sd_data^3)
+  return(skewness_value)
+
+}
+
+
+```
+
+Checking for skeewness in the histograms
+```{r}
+calculate_and_print_skewness <- function(df) {
+  # Find which columns are numeric
+  numeric_cols <- sapply(df, is.numeric)
+  
+  # Filter for only the names of numeric columns
+  numeric_col_names <- names(df)[numeric_cols]
+  
+  # Calculate skewness for each numeric column using sapply for a concise loop
+  skewness_scores <- sapply(df[numeric_col_names], calculate_skewness_score)
+  
+  # Create a dataframe to display the results clearly
+  results_df <- data.frame(
+    Variable = numeric_col_names,
+    Skewness = skewness_scores,
+    row.names = NULL # Remove row names for a cleaner look
+  )
+  
+  # Print the results table
+  print("Skewness of Numeric Variables:")
+  print(results_df)
+  
+  # Return the results dataframe invisibly
+  return(invisible(results_df))
+}
+
+calculate_and_print_skewness(data)
+```
+Based on the scores, it can be stated that Relative_Compactness and Wall_Area have a slight skewness, thus a log-transform is calculated 
+
+Plotting the log-tranform of the skeewed variables, and printing before and after skeewness
+```{r}
+log_transformed_features <- as.data.frame(log(data[, c("Relative_Compactness", "Wall_Area")]))
+
+plot_feature_histograms(log_transformed_features)
+
+
+# Calculating skewness
+relative_copmpacness <- calculate_skewness_score(data$Relative_Compactness)
+wall_area <- calculate_skewness_score(data$Wall_Area)
+
+transformed_relative_copmpacness <- calculate_skewness_score(log_transformed_features$Relative_Compactness)
+transformed_wall_area <- calculate_skewness_score(log_transformed_features$Wall_Area)
+
+
+# Create test dataframe
+comparison_df <- data.frame(
+  Feature = c("Relative_Compactness", "Wall_Area"),
+  Skeewness_before_transform = c(relative_copmpacness, wall_area),
+  Skeewness_after_transform  = c(transformed_relative_copmpacness, transformed_wall_area)
+)
+
+
+# Print the final table
+print(comparison_df)
+
+
+
+```
+The log-transformed features are visually more balanced, and therefore alligning more with assumption of Normally distributed distributions
+
+Plotting histograms for the reponse variables;
+### Plotting the response variables 
+```{r}
+data %>% ggplot(aes(Heating_Load)) +
+  geom_density(aes(fill = "red", color = "red")) +
+  xlab("heating lab") +
+  ggtitle("Density of Heating Load") +
+  theme_economist() +
+  theme(legend.position = "none")
+
+
+old_par <- par(mfrow = c(1, 2), mar = c(4, 4, 3, 2) + 0.1)
+# histogram with added parameters
+heating_load <-data[['Heating_Load']]
+
+hist(heating_load,
+main="Heating Load Histogram",
+xlab="Heating Load [W]",
+ylab="Frequenzy",
+xlim=c(0,max(heating_load)+10),
+col="darkmagenta"
+)
+```
+
+
+### Cooling load density
+```{r}
+data %>% ggplot(aes(Cooling_Load)) +
+  geom_density(aes(fill = "gray", color = "gray")) +
+  xlab("cooling lab") +
+  ggtitle("Density of Cooling Load") +
+  theme_economist() +
+  theme(legend.position = "none")
+
+
+cooling_load <-data[['Cooling_Load']]
+
+hist(cooling_load,
+main="Cooling Load Histogram",
+xlab="Cooling Load [W]",
+ylab="Frequenzy",
+xlim=c(0,max(cooling_load)+10),
+col="coral"
+)
+```
+Based on the plots, it is clear that the response variables are bimodal, having two distinct groups of Heating and Cooling loads
+
+
+### Boxplots
+
+To illustrate scaling inbalance, box plots are used. 
+```{r}
+
+plot_individual_boxplots <- function(data, exclude_cols = c("Heating_Load", "Cooling_Load")) {
+  numeric_features <- names(data)[sapply(data, is.numeric)]
+  features_to_plot <- setdiff(numeric_features, exclude_cols)
+  n_features <- length(features_to_plot)
+  
+  # Set layout for plotting
+  old_par <- par(mfrow = c(ceiling(1), 1), mar = c(4, 4, 3, 2) + 0.1)
+
+  for (feature in features_to_plot) {
+    boxplot(data[[feature]],
+            main = paste(gsub("_", " ", feature)), # Title for each plot
+            ylab = "Value", # Y-axis label
+            col = "lightblue", # Color of the boxplot
+            las = 1 # Always horizontal axis labels for values
+    )
+  }
+
+  # Reset par settings
+  par(old_par)
+}
+
+
+#Plotting individual featues
+plot_individual_boxplots(data)
+
+# Plotting all features in one diagram
+boxplot(data,col="lightblue", main = "boxplot of all coloumns", las = 2)
+```
+
+
+The boxplot represents the distribution of all features in the dataset before scaling. And they clearly illustrates the significant differences in feature ranges.
+
+Notable obeservations include:
+
+  1- Surface_Area, Wall_Area, and Roof_Area all have very different scales.
+
+  2- Features such as Relative_Compactness and Overall_Height span a much smaller range. 
+  
+This plot clearly demonstrates a scale imbalance among features. Further more, the skewness of some features are visualized.
+
+
+
+### ScatterPlots
+Scatterplots are implemented to get a sense of the linear nature of the different features. 
+
+```{r}
+
+numeric_features <- c(
+  'Relative_Compactness', 'Surface_Area', 'Wall_Area', 'Roof_Area',
+  'Overall_Height', 'Glazing_Area'
+)
+targets <- c("Heating_Load", "Cooling_Load")
+
+plot_scatterplots <- function(data, numerical_features, targets) {
+  
+  # Set layout for plotting
+  old_par <- par(mfrow = c(2, 3), mar = c(0, 0, 0, 0) + 3.8)
+  for (target in targets) {
+    for (feature in numerical_features) {
+        plot(data[[feature]], data[[target]],
+             xlab = gsub("_", " ", feature),  
+             ylab = target, 
+             main = paste(gsub("_", " ", target), "vs.", gsub("_", " ", feature)), 
+             col = "steelblue", # Point color
+             pch = 16,          # Solid circles for points
+             cex = 0.8,          # Size of points
+             ylim = c(0, max(data[[target]]))
+        )
+    }
+  }
+  # Reset par settings
+  par(old_par)
+}
+
+plot_scatterplots(data, numeric_features, targets)
+
+```
+From the scatterplots, we observe nonlinear behaviour for Surface Area, and Roof Area. This indicated an inherent noise in the observer that could pose a problem for the linear mode.
+A relatively large variance can be observed for each feature, this can be taken into account when defining prior distributions. 
+
+
+### Correlation Matrix
+
+The figure below displays the correlation matrix for all numeric features in the Energy Efficiency dataset. Each cell shows the Pearson correlation coefficient between a pair of variables, with values ranging from -1 to +1.
+For features that are strongly correlated, it is possible to remove some. Due to the dataset being small, and the number of features being relatively few this is not urgent for the Energy Efficiency data set. 
+
+```{r}
+
+# Define categorical features to exclude
+exclude_cols <- c("Orientation", "Glazing_Area_Distribution")
+numeric_data <- data[, !(names(data) %in% exclude_cols) & sapply(data, is.numeric)]
+
+# Compute correlation matrix
+corr_matrix <- cor(numeric_data)
+
+# Visualize with corrplot
+corrplot(corr_matrix, method = "color", type = "upper", 
+         tl.cex = 0.8, addCoef.col = "black", number.cex = 0.7,
+         title = "Correlation Matrix of Features", mar=c(0,0,1,0))
+
+```
+
+  +1 indicates a perfect positive linear relationship
+ –1 indicates a perfect negative linear relationship
+  0 indicates no linear correlation
+
+The color gradient visually reinforces this relationship, with deep blue for strong positive correlations and dark red for strong negative correlations.
+
+Key Observations:
+
+-Relative_Compactness is strongly negatively correlated with Surface_Area (-0.99) and positively correlated with Overall_Height (0.83), implying geometric dependencies in building structure as expenced. Thus this featureis a potential candidate for removal.
+-Heating_Load shows a strong negative correlation with Relative_Compactness (-0.62), suggesting that more compact buildings require less energy for heating — a physically intuitive insight.
+-Cooling_Load is highly positively correlated with Heating_Load (0.89), indicating that buildings that require more heating also tend to require more cooling, possibly due to poor insulation or inefficiency.
